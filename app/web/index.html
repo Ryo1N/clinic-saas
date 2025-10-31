@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Clinic — Public</title>
+  <script defer>
+    // ---- Utilities to force local display----
+    function parseAsUTC(s) {
+      if (!s) return new Date(NaN);
+      let t = String(s).trim().replace(" ", "T");
+      const hasTZ = /[zZ]|[+\-]\d\d:?\d\d$/.test(t);
+      if (!hasTZ) t += "Z";
+      return new Date(t);
+    }
+    const fmtLocal = (s) =>
+      parseAsUTC(s).toLocaleString(undefined, {
+        year:"numeric", month:"2-digit", day:"2-digit",
+        hour:"2-digit", minute:"2-digit", hour12:false, timeZoneName:"short"
+      });
+
+    // date(YYYY-MM-DD, locsl) → convert 00:00 of the day locally to ISO
+    function localDateStartToUTCISO(dateStr) {
+      const [y,m,d] = dateStr.split("-").map(Number);
+      const dt = new Date(y, m-1, d, 0, 0, 0); // Local
+      return dt.toISOString();
+    }
+    // date(YYYY-MM-DD, local) → convert 00:00 of the day +1 locally to ISO
+    function localDateEndToUTCISO(dateStr) {
+      const [y,m,d] = dateStr.split("-").map(Number);
+      const dt = new Date(y, m-1, d+1, 0, 0, 0); // next day 00:00
+      return dt.toISOString();
+    }
+
+    // ---- Retrieve slots and render ----
+    async function fetchSlots() {
+      const fromD = document.getElementById('fromDate').value;
+      const toD   = document.getElementById('toDate').value;
+      if (!fromD || !toD) return;
+
+      // Duration [from 00:00, to day + 1 00:00)
+      const fromISO = localDateStartToUTCISO(fromD);
+      const toISO   = localDateEndToUTCISO(toD);
+
+      const res = await fetch(`/api/public/slots?from=${encodeURIComponent(fromISO)}&to=${encodeURIComponent(toISO)}`);
+      const data = await res.json();
+      renderSlots(data);
+    }
+
+function renderSlots(slots) {
+  const tbody = document.querySelector('#slots tbody');
+  tbody.innerHTML = '';
+  const now = Date.now();
+
+  // Keep only future slots (defensive)
+  slots = slots.filter(s => parseAsUTC(s.start_at).getTime() > now);
+
+  // Sort by start time
+  slots.sort((a, b) => parseAsUTC(a.start_at) - parseAsUTC(b.start_at));
+
+  if (!slots.length) {
+    tbody.innerHTML = `<tr><td colspan="3">No available slots</td></tr>`;
+    return;
+  }
+
+  for (const s of slots) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><code>${fmtLocal(s.start_at)}</code></td>
+      <td><code>${fmtLocal(s.end_at)}</code></td>
+      <td style="text-align:right"><button data-id="${s.id}" data-start="${s.start_at}" data-end="${s.end_at}">Book</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+    async function book(start_at, end_at, patient_name, note) {
+      const res = await fetch('/api/public/appointments', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ start_at, end_at, patient_name, note })
+      });
+      if (res.ok) {
+        alert('Reservation completed');
+        fetchSlots();
+      } else {
+        const err = await res.json().catch(()=>({detail:'Error'}));
+        alert('Reservation failed: ' + (err.detail || res.status));
+      }
+    }
+
+    // ---- Quick range button ----
+    function setRange(days) {
+      const today = new Date();
+      const pad = n => String(n).padStart(2,'0');
+      const toYMD = (d) => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+
+      const from = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const to   = new Date(from.getTime() + (days-1)*24*60*60*1000);
+      document.getElementById('fromDate').value = toYMD(from);
+      document.getElementById('toDate').value   = toYMD(to);
+      fetchSlots();
+    }
+
+    // ---- Event ----
+    document.addEventListener('click', (e)=>{
+      const btn = e.target.closest('.book-btn');
+      if (!btn) return;
+      const start_at = btn.dataset.start;
+      const end_at   = btn.dataset.end;
+      const patient_name = prompt('Please enter your name.');
+      if (!patient_name) return;
+      const note = prompt('Note (Optional)') || null;
+      book(start_at, end_at, patient_name, note);
+    });
+
+    document.addEventListener('DOMContentLoaded', ()=>{
+      // Default shows today to 7 days later
+      setRange(7);
+      document.getElementById('refresh').addEventListener('click', fetchSlots);
+      document.getElementById('range7').addEventListener('click', ()=>setRange(7));
+      document.getElementById('range14').addEventListener('click', ()=>setRange(14));
+      document.getElementById('range30').addEventListener('click', ()=>setRange(30));
+    });
+  </script>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: .6rem; border-bottom: 1px solid #ddd; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    header { display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem; }
+    input, button { font: inherit; }
+    .row { display:grid; grid-template-columns: auto auto auto 1fr; gap: .5rem; align-items: end; }
+    .btns { display:flex; gap:.5rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Reservation page（Public）</h1>
+    <nav><a href="/web/doctor.html">Doctor</a></nav>
+  </header>
+
+  <section>
+    <div class="row">
+      <label>Start date<br><input id="fromDate" type="date"></label>
+      <label>End date<br><input id="toDate" type="date"></label>
+      <div><button id="refresh">Apply</button></div>
+      <div class="btns">
+        <button id="range7">Show up to 7 days later</button>
+        <button id="range14">Show up to 14 days later</button>
+        <button id="range30">Show up to 30 days later</button>
+      </div>
+    </div>
+  </section>
+
+  <section style="margin-top:1rem;">
+    <table id="slots">
+      <thead><tr><th>Start（Local）</th><th>End（Local）</th><th>Action</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</body>
+</html>

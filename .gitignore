@@ -1,0 +1,48 @@
+# --- Python / build ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+*.log
+
+# --- Virtualenv ---
+.venv/
+venv/
+
+# --- Env files (keep example only) ---
+.env
+.env.*
+!.env.example
+
+# --- DB (SQLite) ---
+app.db
+*.sqlite
+*.sqlite3
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+htmlcov/
+CACHEDIR.TAG
+**/CACHEDIR.TAG
+
+# --- Type checkers ---
+.mypy_cache/
+.pytype/
+.pyre/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# --- Web (if ever used) ---
+web/node_modules/
+web/dist/

@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Clinic — Doctor</title>
+  <script defer>
+    // =====Shared utility =====
+    async function api(path, opts = {}) {
+      const res = await fetch(path, opts);
+      if (res.status === 401) alert("Authentication required");
+      return res;
+    }
+    // Parse date strings from servers without timezones as UTC
+    function parseAsUTC(s) {
+      if (!s) return new Date(NaN);
+      let t = String(s).trim().replace(" ", "T");
+      const hasTZ = /[zZ]|[+\-]\d\d:?\d\d$/.test(t);
+      if (!hasTZ) t += "Z";
+      return new Date(t);
+    }
+    const fmtLocal = (s) =>
+      parseAsUTC(s).toLocaleString(undefined, {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit",
+        hour12: false, timeZoneName: "short"
+      });
+
+    // Local datetime to be converted to datetime-local string
+    const joinLocalDateTime = (dateStr, timeStr) => `${dateStr}T${timeStr}`;
+
+    // datetime-local(local) → ISO(UTC)
+    const toUTC = (localDateTime) => {
+      if (!localDateTime) return null;
+      const d = new Date(localDateTime);
+      return d.toISOString(); 
+    };
+
+    // Date → "YYYY-MM-DD"
+    function toYMD(d){
+      const pad = n => String(n).padStart(2,'0');
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    }
+    // Date → "HH:MM"（00 or 30 assumed）
+    function toHM(d){
+      const pad = n => String(n).padStart(2,'0');
+      return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    // creating <select> per 30 minutes
+    function fillHalfHourOptions(sel) {
+      sel.innerHTML = "";
+      for (let h=0; h<24; h++) {
+        for (let m of [0,30]) {
+          const v = `${String(h).padStart(2,'0')}:${m===0?'00':'30'}`;
+          const opt = document.createElement('option');
+          opt.value = opt.textContent = v;
+          sel.appendChild(opt);
+        }
+      }
+    }
+
+// ===== Availability =====
+async function loadAvailability() {
+  const res = await api("/api/doctor/availability");
+  let rows = res.ok ? await res.json() : [];
+
+  // Get current date in UTC
+  const nowUtc = Date.now();
+
+  // Remove past time slots
+  rows = rows.filter(r => parseAsUTC(r.end_at).getTime() > nowUtc);
+
+  // Sort by starting date
+  rows.sort((a, b) => parseAsUTC(a.start_at) - parseAsUTC(b.start_at));
+
+  const tbody = document.querySelector("#avails tbody");
+  tbody.innerHTML = "";
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4">No upcoming availability</td></tr>';
+    return;
+  }
+
+  for (const a of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><code>${fmtLocal(a.start_at)}</code></td>
+      <td><code>${fmtLocal(a.end_at)}</code></td>
+      <td>${a.is_active ? "active" : "inactive"}</td>
+      <td style="text-align:right">
+        <button data-id="${a.id}" data-action="edit">Edit</button>
+        <button data-id="${a.id}" data-action="del">Delete</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+    async function submitAvailability(e) {
+      e.preventDefault();
+      const dateStart = document.getElementById("av_date_start").value;
+      const timeStart = document.getElementById("av_time_start").value;
+      const dateEnd   = document.getElementById("av_date_end").value;
+      const timeEnd   = document.getElementById("av_time_end").value;
+      const editingId = document.getElementById("av_edit_id").value;
+
+      if (!dateStart || !timeStart || !dateEnd || !timeEnd) {
+        alert("Please input the date and time of the start / end");
+        return;
+      }
+      const start_at = toUTC(joinLocalDateTime(dateStart, timeStart));
+      const end_at   = toUTC(joinLocalDateTime(dateEnd,   timeEnd));
+
+      const url = editingId ? `/api/doctor/availability/${editingId}` : "/api/doctor/availability";
+      const method = editingId ? "PUT" : "POST";
+
+      const res = await api(url, {
+        method,
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ start_at, end_at, is_active: true })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Error" }));
+        alert(`${editingId ? "Edit " : "Creation "}Failed: ` + (err.detail || res.status));
+        return;
+      }
+      // リセット
+      (document.getElementById("av_form")).reset();
+      document.getElementById("av_edit_id").value = "";
+      await loadAvailability();
+      await loadSlotsPreview();
+    }
+
+    async function deleteAvailability(id) {
+      const res = await api(`/api/doctor/availability/${id}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) {
+        const err = await res.json().catch(() => ({ detail: "Error" }));
+        alert("Deletion Failed: " + (err.detail || res.status));
+        return;
+      }
+      await loadAvailability();
+      await loadSlotsPreview();
+    }
+
+    // ===== Appointments（with filter） =====
+    let currentApptFilter = "scheduled"; // default
+
+    async function loadAppointments() {
+      const qs = currentApptFilter && currentApptFilter !== "all"
+        ? `?status=${encodeURIComponent(currentApptFilter)}`
+        : "";
+      const res = await api(`/api/doctor/appointments${qs}`);
+      const rows = res.ok ? await res.json() : [];
+      rows.sort((a,b)=> parseAsUTC(a.start_at) - parseAsUTC(b.start_at));
+      const tbody = document.querySelector("#apts tbody");
+      tbody.innerHTML = "";
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6">No matching reservations.</td></tr>';
+        return;
+      }
+      for (const a of rows) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><code>${fmtLocal(a.start_at)}</code></td>
+          <td><code>${fmtLocal(a.end_at)}</code></td>
+          <td>${a.patient_name}</td>
+          <td>${a.note ?? ""}</td>
+          <td><strong>${a.status}</strong></td>
+          <td style="text-align:right">
+            <select data-id="${a.id}" data-role="status">
+              <option value="scheduled" ${a.status==="scheduled"?"selected":""}>scheduled</option>
+              <option value="completed">completed</option>
+              <option value="no_show">no_show</option>
+              <option value="canceled">canceled</option>
+            </select>
+            <button data-id="${a.id}" data-action="apply">Update</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function updateStatus(id, statusValue) {
+      const res = await api(`/api/doctor/appointments/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: statusValue })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Error" }));
+        alert("更新失敗: " + (err.detail || res.status));
+        return;
+      }
+      await loadAppointments();
+      await loadSlotsPreview();
+    }
+
+    // ===== Public Slots Preview for the Next 7 Days =====
+    async function loadSlotsPreview() {
+      const now = new Date(); now.setUTCHours(0,0,0,0);
+      const plus7 = new Date(now.getTime() + 7*24*60*60*1000);
+      const qs = `from=${encodeURIComponent(now.toISOString())}&to=${encodeURIComponent(plus7.toISOString())}`;
+      const res = await fetch(`/api/public/slots?${qs}`);
+      const rows = res.ok ? await res.json() : [];
+      rows.sort((a,b)=> parseAsUTC(a.start_at) - parseAsUTC(b.start_at));
+      const tbody = document.querySelector("#slots tbody");
+      tbody.innerHTML = "";
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="2">No slots available</td></tr>';
+        return;
+      }
+      for (const s of rows) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><code>${fmtLocal(s.start_at)}</code></td>
+          <td><code>${fmtLocal(s.end_at)}</code></td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    // ===== Event =====
+    document.addEventListener("submit", (e) => {
+      if (e.target && e.target.id === "av_form") submitAvailability(e);
+    });
+
+    document.addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      const action = btn.dataset.action;
+      const id = btn.dataset.id;
+
+      if (action === "edit") {
+        const tr = btn.closest("tr");
+        const startText = tr.querySelector("td:nth-child(1) code").textContent;
+        const endText   = tr.querySelector("td:nth-child(2) code").textContent;
+        // Convert locally displayed datetime to input
+        const startD = parseAsUTC(startText);
+        const endD   = parseAsUTC(endText);
+        document.getElementById("av_date_start").value = toYMD(startD);
+        document.getElementById("av_time_start").value = toHM(startD);
+        document.getElementById("av_date_end").value   = toYMD(endD);
+        document.getElementById("av_time_end").value   = toHM(endD);
+        document.getElementById("av_edit_id").value = id;
+        return;
+      }
+
+      if (action === "del") { deleteAvailability(id); return; }
+      if (action === "apply") {
+        const sel = btn.parentElement.querySelector('select[data-role="status"]');
+        updateStatus(id, sel.value);
+        return;
+      }
+    });
+
+    // Changing status filter
+    document.addEventListener("change", (e) => {
+      const sel = e.target.closest("#statusFilter");
+      if (!sel) return;
+      currentApptFilter = sel.value; // "scheduled" | "completed" | "no_show" | "canceled" | "all"
+      loadAppointments();
+    });
+
+    // Initial load
+    document.addEventListener("DOMContentLoaded", () => {
+      // Select creation per 30 mins
+      fillHalfHourOptions(document.getElementById('av_time_start'));
+      fillHalfHourOptions(document.getElementById('av_time_end'));
+
+      // Set default as :00 or :30 of current hour and add +30 minutes
+      const now = new Date();
+      const base = new Date(now);
+      const mins = base.getMinutes();
+      base.setMinutes(mins < 30 ? 30 : 60, 0, 0);
+      const end = new Date(base.getTime() + 30*60*1000);
+
+      document.getElementById("av_date_start").value = toYMD(base);
+      document.getElementById("av_time_start").value = toHM(base);
+      document.getElementById("av_date_end").value   = toYMD(end);
+      document.getElementById("av_time_end").value   = toHM(end);
+
+      loadAvailability();
+      loadSlotsPreview();
+      // Reservation list to match the default
+      currentApptFilter = document.getElementById("statusFilter").value || "scheduled";
+      loadAppointments();
+    });
+  </script>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 1000px; margin: 2rem auto; padding: 0 1rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: .6rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    header { display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem; }
+    input, select, button { font: inherit; }
+    .grid2 { display:grid; grid-template-columns: 1fr 1fr auto; gap:.5rem; align-items:end; }
+    .row { display:flex; gap:.5rem; align-items: end; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Doctor Console</h1>
+    <nav><a href="/web/index.html">Public</a></nav>
+  </header>
+
+  <!-- Availability Management -->
+  <section>
+    <h2>Availability Management</h2>
+    <form id="av_form" class="grid2" style="background:#f6f7fb; padding:.5rem; border-radius:.5rem;">
+      <input type="hidden" id="av_edit_id">
+      <label>Start
+        <div class="row">
+          <input id="av_date_start" type="date" required>
+          <select id="av_time_start" required></select>
+        </div>
+      </label>
+      <label>End
+        <div class="row">
+          <input id="av_date_end" type="date" required>
+          <select id="av_time_end" required></select>
+        </div>
+      </label>
+      <button>Save</button>
+    </form>
+
+    <div style="margin-top:1rem; overflow-x:auto;">
+      <table id="avails">
+        <thead>
+          <tr><th>Start（Local）</th><th>End（Local）</th><th>State</th><th style="text-align:right;">Action</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Appointments（with Filters） -->
+  <section style="margin-top:2rem;">
+    <h2>Appointments</h2>
+    <div style="margin: .25rem 0 1rem;">
+      <label>Displayed Status：
+        <select id="statusFilter">
+          <option value="scheduled" selected>scheduled（既定）</option>
+          <option value="completed">completed</option>
+          <option value="no_show">no_show</option>
+          <option value="canceled">canceled</option>
+          <option value="all">all</option>
+        </select>
+      </label>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <table id="apts">
+        <thead>
+          <tr><th>Start（Local）</th><th>End（Local）</th><th>Patient</th><th>Note</th><th>Status</th><th style="text-align:right;">Update</th></tr>
+        </thead>ß
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Public Slots Preview -->
+  <section style="margin-top:2rem;">
+    <h2>Public Slots (next 7 days, local time)</h2>
+    <div style="overflow-x:auto;">
+      <table id="slots">
+        <thead><tr><th>Start</th><th>End</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</body>
+</html>
