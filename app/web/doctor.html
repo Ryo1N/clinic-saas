@@ -125,7 +125,7 @@ async function loadAvailability() {
         alert(`${editingId ? "Edit " : "Creation "}Failed: ` + (err.detail || res.status));
         return;
       }
-      // リセット
+      // Reset
       (document.getElementById("av_form")).reset();
       document.getElementById("av_edit_id").value = "";
       await loadAvailability();
@@ -147,19 +147,42 @@ async function loadAvailability() {
     let currentApptFilter = "scheduled"; // default
 
     async function loadAppointments() {
+      // Build query string based on current filter (status)
       const qs = currentApptFilter && currentApptFilter !== "all"
         ? `?status=${encodeURIComponent(currentApptFilter)}`
         : "";
+
+      // Fetch appointments from backend
       const res = await api(`/api/doctor/appointments${qs}`);
       const rows = res.ok ? await res.json() : [];
-      rows.sort((a,b)=> parseAsUTC(a.start_at) - parseAsUTC(b.start_at));
+
+      // Sort by start time (ascending)
+      rows.sort((a, b) => parseAsUTC(a.start_at) - parseAsUTC(b.start_at));
+
+      // Filter: hide past appointments except "scheduled"
+      const now = Date.now();
+      const filteredRows = rows.filter(a => {
+        // Always show all if "all" is selected
+        if (currentApptFilter === "all") return true;
+
+        const isPast = parseAsUTC(a.end_at).getTime() <= now;
+
+        // Keep scheduled even if it's already past (may be updated later)
+        if (a.status === "scheduled") return true;
+
+        // For completed / canceled / no_show, show only future
+        return !isPast;
+      });
+
       const tbody = document.querySelector("#apts tbody");
       tbody.innerHTML = "";
-      if (!rows.length) {
+      if (!filteredRows.length) {
         tbody.innerHTML = '<tr><td colspan="6">No matching reservations.</td></tr>';
         return;
       }
-      for (const a of rows) {
+
+      // Render each appointment row
+      for (const a of filteredRows) {
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td><code>${fmtLocal(a.start_at)}</code></td>
@@ -169,7 +192,7 @@ async function loadAvailability() {
           <td><strong>${a.status}</strong></td>
           <td style="text-align:right">
             <select data-id="${a.id}" data-role="status">
-              <option value="scheduled" ${a.status==="scheduled"?"selected":""}>scheduled</option>
+              <option value="scheduled" ${a.status === "scheduled" ? "selected" : ""}>scheduled</option>
               <option value="completed">completed</option>
               <option value="no_show">no_show</option>
               <option value="canceled">canceled</option>

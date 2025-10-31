@@ -68,7 +68,7 @@ function renderSlots(slots) {
     tr.innerHTML = `
       <td><code>${fmtLocal(s.start_at)}</code></td>
       <td><code>${fmtLocal(s.end_at)}</code></td>
-      <td style="text-align:right"><button data-id="${s.id}" data-start="${s.start_at}" data-end="${s.end_at}">Book</button></td>
+      <td style="text-align:right"><button class="book-btn" data-id="${s.id}" data-start="${s.start_at}" data-end="${s.end_at}">Book</button></td>
     `;
     tbody.appendChild(tr);
   }
